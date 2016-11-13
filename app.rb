@@ -3,50 +3,88 @@ require 'sinatra'
 require 'json'
 require 'net/http'
 require 'uri'
+require 'twilio-ruby'
 
 class TwilioRecordingsHandler < Sinatra::Base
 
-  post '/' do
+  helpers do
 
+    def handlePost(notification_number, add_ons)
+      transcripts = ""
+      vb_results = add_ons['results']['voicebase_transcription']
+      if !vb_results.nil?
+        recording_link = retrieveRecordingLink vb_results
+        response_body = retrieveAnalysisResults vb_results
+        transcripts += "VoiceBase: "
+        transcripts += response_body['media']['transcripts']['text']
+      end
+
+      ibm_results = add_ons['results']['ibm_watson_speechtotext']
+      if !ibm_results.nil?
+        recording_link = retrieveRecordingLink ibm_results
+        response_body = retrieveAnalysisResults ibm_results
+        transcripts += "IBM: "
+        results = response_body['results'][0]['results']
+        results.each do |result|
+          transcripts += result['alternatives'][0]['transcript'] + " "
+        end
+      end
+      p transcripts
+
+      sendSms notification_number, transcripts
+    end
+
+    def retrieveAnalysisResults(results)
+        # http S3 url invalid cert workaround; BAD
+        trans_url = results['payload'][0]['url'].gsub(/^https/, "http")
+        uri = URI.parse trans_url
+        response = Net::HTTP.get uri
+        JSON.parse response
+    end
+
+    def retrieveRecordingLink(results)
+        results['links']['Recording']
+    end
+
+    def sendSms(notification_number, body)
+      if notification_number.nil?
+        p "Error sending SMS: No notification number given"
+        return
+      end
+
+      # TODO: move to class instantiation
+      account_sid = ENV['TWILIO_ACCOUNT_SID']
+      auth_token = ENV['TWILIO_AUTH_TOKEN']
+      from_number = ENV['TWILIO_NUMBER']
+      @client = Twilio::REST::Client.new account_sid, auth_token
+
+      # send SMS
+      @client.account.messages.create({
+        :from => from_number,
+        :to => notification_number,
+        :body => body
+      })
+    end
+
+  end
+
+  post '/' do
+    # get AddOns, form encoded in POST body
     add_ons = JSON.parse params[:AddOns]
     status = add_ons['status']
     if status != "successful"
       message = add_ons['message']
       code = add_ons['code']
-      p "Error #{code}: #{message}"
+      p "Error #{code} : #{message}"
       return
     end
 
-    vb_results = add_ons['results']['voicebase_transcription']
-    if !vb_results.nil?
-      # http S3 url invalid cert workaround
-      trans_url = vb_results['payload'][0]['url'].gsub(/^https/, "http")
-      recording_link = vb_results['links']['Recording']
+    # get number param in GET
+    notification_number = params[:number]
+    p "Notification Number: #{notification_number}"
 
-      uri = URI.parse trans_url
-      res = Net::HTTP.get uri
-      res_body = JSON.parse res
-      transcripts = res_body['media']['transcripts']['text']
-      p "Voicebase Transcription: #{transcripts}"
-    end
-
-    ibm_results = add_ons['results']['ibm_watson_speechtotext']
-    if !ibm_results.nil?
-      # http S3 url invalid cert workaround
-      trans_url = ibm_results['payload'][0]['url'].gsub(/^https/, "http")
-      recording_link = ibm_results['links']['Recording']
-
-      uri = URI.parse trans_url
-      res = Net::HTTP.get uri
-      res_body = JSON.parse res
-      results = res_body['results'][0]['results']
-      transcripts = ""
-      results.each do |result|
-        transcripts += result['alternatives'][0]['transcript'] + " "
-      end
-      p "IBM Transcription: #{transcripts}"
-    end
-
+    # process transcription analysis
+    handlePost notification_number, add_ons
   end
 
 end
