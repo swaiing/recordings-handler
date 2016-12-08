@@ -35,10 +35,27 @@ class TwilioRecordingsHandler < Sinatra::Base
     end
 
     def retrieveAnalysisResults(results)
-        # http S3 url invalid cert workaround; BAD
-        trans_url = results['payload'][0]['url'].gsub(/^https/, "http")
-        uri = URI.parse trans_url
-        response = Net::HTTP.get uri
+        url = results['payload'][0]['url']
+        response = ""
+
+        # for API resource fix
+        if url.include? "api.twilio.com"
+          uri = URI.parse url
+          Net::HTTP.start(uri.host, uri.port, :use_ssl => uri.scheme == 'https') do |http|
+              req = Net::HTTP::Get.new uri.request_uri
+              req.basic_auth ENV['TWILIO_ACCOUNT_SID'], ENV['TWILIO_AUTH_TOKEN']
+              response = http.request req
+              p "API resource: #{response.body}"
+          end
+          
+        # for invalid S3
+        else
+          trans_url = url.gsub(/^https/, "http")
+          uri = URI.parse trans_url
+          response = Net::HTTP.get uri
+          p "Invalid S3 resource: #{response}"
+        end
+
         JSON.parse response
     end
 
